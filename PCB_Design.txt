@@ -2,3 +2,5 @@ Hi. This is the link lead you to my EasyEDA PCB design domain.
 Just take a look!
 
 https://oshwlab.com/thanhphuc2311/clock_copy
+
+Note: Read README.md to more important information in case you missed.
