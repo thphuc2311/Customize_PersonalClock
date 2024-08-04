@@ -1,0 +1,1208 @@
+#include <avr/interrupt.h>
+#include <Wire.h>
+#include <DS3231.h>
+DS3231 myRTC;
+#include "Adafruit_SHT31.h"
+Adafruit_SHT31 sht31 = Adafruit_SHT31();
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire);
+// DS1307 clock;  //define a object of DS1307 class
+
+#define SH_CP A2  //pc2
+#define DS A0     //pc0
+#define ST_CP A1  //pc1
+#define COI 6
+
+#define MODE 7
+#define UP 9
+#define DOWN 8
+#define HomeSCREEN 10
+#define MenuSCREEN 20
+#define ALARM 3
+#define ALARM_WORKING 31
+#define DATE 1
+#define TIME 2
+#define INDICATEMODE 5
+#define COUNTBACK 6
+#define ON_OFF_MANAGE 7
+
+#define RESET 10
+#define PIN_MOSI 11
+#define PIN_MISO 12
+#define PIN_SCK 13
+
+#define Convert_Text(x) #x
+#define Combine_Last(y) last##y
+
+uint8_t itemSelected = 4, itemPrevious = 0, itemNext = 2;
+volatile uint8_t Screen = 10;
+uint8_t SelectSubFunc = 1;
+
+// String menu_items[9] = {"DASH", "DATE", "TIME", "ALARM", "H12/24", "REVIEW", "BACK", "ON/OFF" };
+
+char menu_items[8][9] = {  // array with item names
+  { " DASH "  }, 
+  { " DATE "  }, 
+  { " TIME "  }, 
+  { " ALARM" }, 
+  { " BACK "  },
+  { "H12|24" }, 
+  { "CntBck" },
+  { "ON|OFF" } 
+ };
+
+byte dayChuSo[10] = { 0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 0x82, 0xF8, 0x80, 0x90 };
+String DoW[8] = {"","SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+String Month[13] = {"", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+
+// char ON_OFF_MANAGE [3] [20] = {
+//   {"7SEG: ON   OLED: ON"},
+//   {"7SEG: OFF   OLED: ON"},
+//   {"7SEG: ON   OLED: OFF"}
+// };
+
+uint8_t soGiay = 0, soPhut = 0, soGio = 0, soNam, soThang, soNgay, soThu;
+
+uint8_t ButtonState_Menu = 0, ButtonState_Up = 0, ButtonState_Down = 0;
+uint8_t lastButtonState_Menu = 0, lastButtonState_Up = 0, lastButtonState_Down = 0;
+unsigned long lastChangedTime1, lastChangedTime2;
+uint8_t count = 0;
+bool h12Flag = true, pmFlag = true, flagforcentury; // h12Flag == true means Mode12h
+
+uint8_t Alrm2_TempDay, Alrm2_TempHour,Alrm2_TempMinute,Alrm2_Bit;
+bool Alrm_TempDAYorMONTH,Alrm_Temp12or24,Alrm_TempAMorPM;
+
+uint8_t alarmDay, alarmHour, alarmMinute, alarmSecond, alarmBits;
+bool alarmDy, alarmH12Flag, alarmPmFlag;
+
+bool OneTimeUpdateValue_B = true;
+uint8_t TempNgay, TempThang, TempNam, TempGio, TempPhut, TempGiay, TempThu;
+
+uint8_t Alrm2_Mode = 0;
+bool g_Buzz_Signal = false, g_ON_OFF_MANAGE_4_OLED_B = true;
+
+String Alrm_Mode_Str[3] = {"TurnOFF", "JustOne", " Daily"};
+
+volatile uint8_t giay, phut;
+volatile bool tick = false, g_ON_OFF_MANAGE_4_7SEG_B = true;
+bool state_COI = false;
+
+void setup() {
+  Serial.begin(9600);
+  cli();              // tắt ngắt toàn cục
+    
+  /* Reset Timer/Counter1 */
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TIMSK1 = 0;
+  
+  /* Setup Timer/Counter1 */
+  TCCR1B |= (1 << WGM12) | (1 << CS11) | (1 << CS10); // prescale = 64 and CTC mode 4
+  OCR1A = 950;              // initialize OCR1A 2499 = 10ms
+  TIMSK1 = (1 << OCIE1A);     // Output Compare Interrupt Enable Timer/Counter1 channel A
+  sei();                      // cho phép ngắt toàn cục
+
+  Wire.begin();
+  sht31.begin(0x44);
+
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // Address 0x3C for 128x32
+  display.setRotation(2);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.println("HELLO");
+  display.display(); // actually display all of the above
+
+  pinMode(SH_CP, OUTPUT);
+  pinMode(DS, OUTPUT);
+  pinMode(ST_CP, OUTPUT);
+  pinMode(COI, OUTPUT);
+
+  pinMode(A3, OUTPUT);  //pc3
+  pinMode(3, OUTPUT);   //pd3
+  pinMode(4, OUTPUT);   //pd4
+  pinMode(5, OUTPUT);   //pd5
+
+  pinMode(MODE, INPUT_PULLUP);  // menu pd7
+  pinMode(UP, INPUT_PULLUP);    // len pb0
+  pinMode(DOWN, INPUT_PULLUP);  //xuong pb1
+  pinMode(2, INPUT_PULLUP);  //INT0
+
+  sht31.heater(0);
+
+   attachInterrupt(digitalPinToInterrupt(2), isr_TickTock, FALLING);
+  // myRTC.setA2Time(15, 14, 23, 0b01000000, false, false, false);
+  myRTC.turnOffAlarm(1); // not used
+  myRTC.checkIfAlarm(1); // clear all Alarm Flags
+  myRTC.checkIfAlarm(2);
+}
+
+void loop() {
+  /*
+  * Declard and asign the pointer function to store the address of funtion TangStuff
+  * Actually, you dont need pointer function for application like this, its just my practice.
+  */
+  void(*ptr_TangStuff) (uint8_t &, uint8_t &, uint8_t &, uint8_t, uint8_t) = TangStuff;
+
+  static float t = 0.0,tds;
+  static float h = 0.0;
+
+  if(runEvery4Temp_Hum(500))
+  {
+    if ((g_ON_OFF_MANAGE_4_7SEG_B == false) && (g_ON_OFF_MANAGE_4_OLED_B == true))
+    {
+      t = sht31.readTemperature()-0.3;
+    }
+    else
+    {
+      t = sht31.readTemperature() - 1.0;
+    }
+    h = sht31.readHumidity();
+    // tds = myRTC.getTemperature();
+
+    // Serial.print(t);Serial.print(',');
+    // Serial.println(tds);//Serial.print(',');
+    // Serial.println(h);
+  }
+  
+  ButtonState_Menu = digitalRead(MODE);
+  ButtonState_Up = digitalRead(UP);
+  ButtonState_Down = digitalRead(DOWN);
+
+  soGiay = myRTC.getSecond();
+  soPhut = myRTC.getMinute();
+  soGio = myRTC.getHour(h12Flag,pmFlag);
+  soNam = myRTC.getYear();
+  soThang = myRTC.getMonth(flagforcentury);
+  soNgay = myRTC.getDate();
+  soThu = myRTC.getDoW();
+
+  if(Screen == HomeSCREEN)
+  {
+    OneTimeUpdateValue_B = true;
+
+    display.clearDisplay();
+    // myRTC.getA2Time(alarmDay, alarmHour, alarmMinute, alarmBits, alarmDy, alarmH12Flag, alarmPmFlag,true /*ClearAlarmBits*/);
+    // Serial.print(String(alarmHour) + 'h');Serial.print(alarmMinute);Serial.print(alarmBits);Serial.println(Alrm2_Mode);
+    // Serial.println(alarmH12Flag);Serial.println(alarmPmFlag);
+    SelectSubFunc = 1;  
+    if(g_ON_OFF_MANAGE_4_OLED_B)
+    {
+      Show_OLED(t,h);
+    }
+    
+    if (ButtonState_Menu != lastButtonState_Menu) {  
+      if (ButtonState_Menu == LOW)  // khi nhan menu
+      {
+        Screen = MenuSCREEN;
+      }
+    }
+  }
+  else if(Screen == MenuSCREEN)
+  {
+    SelectSubFunc = 1;
+
+    OneTimeUpdateValue_B = true;
+
+    TangGiam_Stuff(itemSelected,0,7);
+
+    //Auto adjust position of item menu
+    itemPrevious = itemSelected -1;
+    if(itemPrevious > 250){itemPrevious = 7;}
+    itemNext = itemSelected + 1;
+    if(itemNext >= 8 ){itemNext = 0;}
+
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    //item previous
+    display.print(menu_items[itemPrevious]); 
+
+    display.setCursor(40, 0);
+    //item selected
+    display.print(menu_items[itemSelected]);
+
+    display.setCursor(80, 0);
+    //item next
+    display.print(menu_items[itemNext]);
+
+    //Selected Sysbol
+    display.setCursor(55, 8);
+    display.println(char(94));
+
+    display.setCursor(0, 24);
+    display.println( F(">:Enter    X:<    O:>") );
+
+    display.display();
+
+    if (ButtonState_Menu != lastButtonState_Menu) {
+      if (ButtonState_Menu == LOW)  // khi nhan menu
+      {
+        Screen = itemSelected;
+      }
+    }
+
+  }
+  else if(Screen == DATE) //edit Date
+  {
+    if(OneTimeUpdateValue_B)
+    {
+      OneTimeUpdateValue_B = false;
+      TempNgay = soNgay; TempThang = soThang; TempNam = soNam, TempThu = soThu;
+    }
+
+    display.clearDisplay();display.setCursor(0, 0);display.print("Seting Ngay di ni oi!");
+    display.setCursor(0, 8);display.print(DoW[TempThu]);
+    display.setCursor(20, 8);display.print( ((TempNgay<10)?"0":"") + String(TempNgay)  + '.');
+    display.setCursor(38, 8);display.print( ((TempThang<10)?"0":"") + String(TempThang) + '.');
+    display.setCursor(56, 8);display.print(2000+TempNam);
+    display.setCursor(96, 8);display.print("SET?");
+
+    display.setCursor(0, 24);display.print( (SelectSubFunc < 5) ? ">:Next" : "X:Discard O:Save&Back");
+    
+    // if (ButtonState_Up != lastButtonState_Up) { 
+    //   if (ButtonState_Up == LOW)  // khi nhan menu
+    //   {
+    //     if(SelectSubFunc == 1){TempThu= TempThu+1;}
+    //     if(SelectSubFunc == 2){TempNgay= TempNgay+1;}
+    //     if(SelectSubFunc == 3){TempThang=TempThang+1;}
+    //     if(SelectSubFunc == 4){TempNam=TempNam+1;}
+    //   }
+    // }
+    
+    // if (ButtonState_Down != lastButtonState_Down) {    
+    //   if (ButtonState_Down == LOW)  // khi nhan menu
+    //   {
+    //     if(SelectSubFunc == 1){TempThu--;}
+    //     if(SelectSubFunc == 2){TempNgay--;}
+    //     if(SelectSubFunc == 3){TempThang--;}
+    //     if(SelectSubFunc == 4){TempNam--;}
+    //   }
+    // }
+
+    if(SelectSubFunc == 1){TangGiam_Stuff(TempThu,1,7);}
+    if(SelectSubFunc == 2){TangGiam_Stuff(TempNgay,1,31);}
+    if(SelectSubFunc == 3){TangGiam_Stuff(TempThang,1,12);}
+    if(SelectSubFunc == 4){TangGiam_Stuff(TempNam,0,99);}
+    
+
+    if(SelectSubFunc == 5) 
+    {
+      if (ButtonState_Down != lastButtonState_Down) {    //dont save any thing & back to menu
+        if (ButtonState_Down == LOW)  // khi nhan menu
+        {
+          Screen = MenuSCREEN;
+          delay(50);
+        }
+      }
+
+      if (ButtonState_Up != lastButtonState_Up) {    //Ok & return to Home
+        if (ButtonState_Up == LOW)  // khi nhan menu
+        {
+          myRTC.setDoW(TempThu);myRTC.setDate(TempNgay);myRTC.setMonth(TempThang);myRTC.setYear(TempNam);
+          Screen = HomeSCREEN;
+        }
+      }
+    }
+
+    // if (ButtonState_Menu != lastButtonState_Menu) {  
+    //   if (ButtonState_Menu == LOW)  // khi nhan menu
+    //   {
+    //     SelectSubFunc++;
+    //     if(SelectSubFunc >= 6){SelectSubFunc = 1;}
+    //   }
+    // }
+
+    // (*ptr_TangStuff)(ButtonState_Menu, lastButtonState_Menu, SelectSubFunc,1,6);
+    ptr_TangStuff(ButtonState_Menu, lastButtonState_Menu, SelectSubFunc,1,6); // Select sub-function of Setting Date (DoW, Day, Month,...)
+
+    display.setCursor( (SelectSubFunc == 1)?6:(SelectSubFunc == 2)?23:(SelectSubFunc == 3)?41:(SelectSubFunc == 4)?65:102, 16); display.println(char(94));display.display();
+  }
+  else if(Screen == TIME) // edit Time
+  {
+    static bool TemppmFlag = false;
+    if(OneTimeUpdateValue_B)
+    {
+      OneTimeUpdateValue_B = false;
+      TempGio = soGio; TempPhut = soPhut; TempGiay= soGiay;TemppmFlag= pmFlag;
+    }
+    /* View of Mode 24h*/
+    if(h12Flag == false) // Mode 24h
+    {
+      display.clearDisplay();display.setCursor(0, 0);display.println("Setting Gio di ni oi!");
+      display.setCursor(0, 8);display.println( ((TempGio<10)?"0":"") + String(TempGio) + "h:");
+      display.setCursor(24, 8);display.println( ((TempPhut<10)?"0":"") + String(TempPhut) + "m:");
+      display.setCursor(48, 8);display.println( ((TempGiay<10)?"0":"") + String(TempGiay) + 's');
+      display.setCursor(96, 8);display.println("SET?");
+
+      display.setCursor(0, 24);display.println( (SelectSubFunc < 4) ? ">:Next" : "X:Discard O:Save&Back");
+      
+
+      if(SelectSubFunc == 1){TangGiam_Stuff(TempGio,0,23);}
+      if(SelectSubFunc == 2){TangGiam_Stuff(TempPhut,0,59);}
+      if(SelectSubFunc == 3){TangGiam_Stuff(TempGiay,0,59);}
+    } /* View of Mode 24h*/
+
+    /* View of Mode 12h*/
+    else
+    {
+      display.clearDisplay();display.setCursor(0, 0);display.println("Setting Gio 12h ni!");
+      display.setCursor(0, 8);display.println( ((TempGio<10)?"0":"") + String(TempGio) + "h:");
+      display.setCursor(24, 8);display.println( ((TempPhut<10)?"0":"") + String(TempPhut) + "m:");
+      display.setCursor(48, 8);display.print( ((TempGiay<10)?"0":"") + String(TempGiay) + 's');
+      display.println(TemppmFlag?" PM":" AM");
+      display.setCursor(96, 8);display.println("SET?");
+
+      display.setCursor(0, 24);display.println( (SelectSubFunc < 5) ? ">:Next" : "X:Discard O:Save&Back");
+      
+
+      if(SelectSubFunc == 1){TangGiam_Stuff(TempGio,1,12);}
+      if(SelectSubFunc == 2){TangGiam_Stuff(TempPhut,0,59);}
+      if(SelectSubFunc == 3){TangGiam_Stuff(TempGiay,0,59);}
+      if(SelectSubFunc == 4){Toggle_Stuff(TemppmFlag);}
+    }
+    /* View of Mode 12h*/
+
+    if( (SelectSubFunc == 4 &&  h12Flag == false) || (SelectSubFunc == 5) ) // For select Confirm 
+    {
+      if (ButtonState_Down != lastButtonState_Down) {    //dont save any thing & back to menu
+        if (ButtonState_Down == LOW)  // khi nhan menu
+        {
+          Screen = MenuSCREEN;
+          delay(100);
+        }
+      }
+
+      if (ButtonState_Up != lastButtonState_Up) {    //Ok & return to Home
+        if (ButtonState_Up == LOW)  // khi nhan menu
+        {
+          Screen = HomeSCREEN;
+          if(h12Flag == false)
+          {
+            /* View of Mode 24h*/
+            myRTC.setHour(TempGio);myRTC.setMinute(TempPhut); myRTC.setSecond(TempGiay);
+            /* View of Mode 24h*/
+          }
+          else 
+          {
+            /* View of Mode 12h*/
+            myRTC.setHour( TemppmFlag? ( (TempGio!=12)? TempGio+12:TempGio ) :( (TempGio!=12)?TempGio:0) );myRTC.setMinute(TempPhut); myRTC.setSecond(TempGiay);
+            /* View of Mode 12h*/
+          }
+        }
+      }
+    }
+
+    // if (ButtonState_Menu != lastButtonState_Menu) {  
+    //   if (ButtonState_Menu == LOW)  // khi nhan menu
+    //   {
+    //     SelectSubFunc++;
+    //     if(SelectSubFunc >= 5){SelectSubFunc = 1;}
+    //   }
+    // }
+
+    (*ptr_TangStuff)(ButtonState_Menu, lastButtonState_Menu, SelectSubFunc,1,h12Flag?6:5);
+    
+    if(h12Flag == false)
+    {
+      /* View of Mode 24h*/
+      display.setCursor( (SelectSubFunc == 1)?6:(SelectSubFunc == 2)?30:(SelectSubFunc == 3)?54:102, 16); display.print(char(94));display.display();
+      /* View of Mode 24h*/
+    }
+    else 
+    {
+      /* View of Mode 12h*/
+      display.setCursor( (SelectSubFunc == 1)?6:(SelectSubFunc == 2)?30:(SelectSubFunc == 3)?54:(SelectSubFunc == 4)?75 :102, 16); display.print(char(94));display.display();
+      /* View of Mode 12h*/
+    }
+  }
+  else if(Screen == ALARM)                                      //ALARM
+  {
+    
+
+    if(OneTimeUpdateValue_B)
+    {
+      OneTimeUpdateValue_B = false;
+      //myRTC.getA2Time(Alrm2_TempDay, Alrm2_TempHour,Alrm2_TempMinute,Alrm2_Bit,Alrm_TempDAYorMONTH,Alrm_Temp12or24,Alrm_TempAMorPM);
+      myRTC.getA2Time(alarmDay, alarmHour, alarmMinute, alarmBits, alarmDy, alarmH12Flag, alarmPmFlag,true /*ClearAlarmBits*/);
+      delay(100);
+      Alrm2_TempDay=alarmDay; Alrm2_TempHour=alarmHour; Alrm2_TempMinute=alarmMinute; Alrm2_Bit=alarmBits; Alrm_TempDAYorMONTH=alarmDy; Alrm_Temp12or24=alarmH12Flag; Alrm_TempAMorPM=alarmPmFlag;
+      if(myRTC.checkAlarmEnabled(2))
+      {
+        if(Alrm2_Bit == 0){Alrm2_Mode = 1;} //justone
+        else{Alrm2_Mode = 2;} // Daily
+      }
+      else{Alrm2_Bit = 0;}
+
+      /* Section Convert Time Alarm:
+      !! Why? To adapt the mode Indication of system, detail:
+      ** Because when change mode Indication 12h or 24h, the DS3231 does not auto adapt the mode Indication
+      ** for timekeeper, so the timekeeper register still store the alarm time before change & not ring anymore.
+      ** SO, that why I need adapt the mode Manually.
+      */
+
+      /* START PreProcess for Change 24h to 12h */
+      if(h12Flag == true) // Mode12h
+      {
+        if(Alrm2_TempHour >= 12 && Alrm2_TempHour != 0)
+        {
+          // Alrm_TempAMorPM = true; // Buoi Chieu
+          if(Alrm_Temp12or24 != h12Flag)
+          {
+            Alrm_TempAMorPM = true; // Buoi Chieu
+          }
+          if(Alrm2_TempHour >= 13) //Only process when up from 13.
+          {
+            Alrm2_TempHour = Alrm2_TempHour - 12; // Change 13h to 1pm. Still keep 12h tobe 12pm
+          }
+        }
+        else
+        {
+          // Alrm_TempAMorPM = false; // Buoi Sang
+          if(Alrm_Temp12or24 != h12Flag)
+          {
+            Alrm_TempAMorPM = false; // Buoi Sang
+          }
+          if(Alrm2_TempHour == 0)
+          {
+            Alrm2_TempHour = 12; //Change 0h to 12am
+          }
+        }
+      }
+      /* END   PreProcess for Change 24h to 12h */
+      /* #############+++++############## */
+      /* START PreProcess for Change 12h to 24h */
+      else  // Mode24h
+      {
+        if(Alrm_TempAMorPM == true) // Buoi Chieu
+        {
+          if(Alrm2_TempHour < 12) // range 1pm to 11pm. 12pm still tobe 12 at Mode 24h
+          {
+            Alrm2_TempHour = Alrm2_TempHour + 12;
+          }
+        }
+        else // Buoi Sang
+        {
+          if( (Alrm2_TempHour == 12) && (Alrm_Temp12or24 != h12Flag) ) // Change 12am to 00h Mode 24h
+          {
+            Alrm2_TempHour = 0;
+          }
+        }
+      }
+      /* END PreProcess for Change 12h to 24h */
+
+      /* Section for SYNC UP TIMEKEEPER */
+      /* Force the pointer to SET SubFunction */
+      if(Alrm_Temp12or24 != h12Flag)
+      {
+        if(h12Flag == false)
+        {
+          SelectSubFunc = 4;
+        }
+        else
+        {
+          SelectSubFunc = 5;
+        }
+      }
+      /* END Section for SYNC UP TIMEKEEPER */
+
+      // myRTC.getA2Time(alarmDay, alarmHour, alarmMinute, alarmBits, alarmDy, alarmH12Flag, alarmPmFlag,true /*ClearAlarmBits*/);
+      // Serial.print(String(alarmHour) + 'h');Serial.print(alarmMinute);Serial.print(alarmBits);Serial.println(Alrm2_Mode);
+      // Serial.println(alarmH12Flag);Serial.println(alarmPmFlag);
+    }
+
+    if(h12Flag == false)
+    {
+      /* View of Mode 24h 1*/
+      display.clearDisplay();display.setCursor(0, 0); display.println( (Alrm_Temp12or24 != h12Flag) ? F("SYNC UP TIMEKEEPER1 !"):F("BaoThuc 24h ne ni!") );
+      display.setCursor(0, 8);display.println( ((Alrm2_TempHour<10)?"0":"") + String(Alrm2_TempHour) + "h:");
+      display.setCursor(24, 8);display.println( ((Alrm2_TempMinute<10)?"0":"") + String(Alrm2_TempMinute) + 'm');
+      display.setCursor(48, 8);display.println( Alrm_Mode_Str[Alrm2_Mode] );
+      display.setCursor(100, 8);display.println("SET?");
+
+      display.setCursor(0, 24);display.println( (SelectSubFunc < 4) ? F(">:Next") : F("X:Discard O:Save&Back"));
+
+      if(SelectSubFunc == 1){TangGiam_Stuff(Alrm2_TempHour,0,23);}
+      if(SelectSubFunc == 2){TangGiam_Stuff(Alrm2_TempMinute,0,59);}
+      if(SelectSubFunc == 3){TangGiam_Stuff(Alrm2_Mode,0,2);}
+      // if(Alrm2_TempHour > 12){Alrm_TempAMorPM = true;}
+      /* View of Mode 24h 1*/
+    }
+    else
+    {
+      /* View of Mode 12h S1*/
+      display.clearDisplay();display.setCursor(0, 0); display.println( (Alrm_Temp12or24 != h12Flag) ? F("SYNC UP TIMEKEEPER2 !"):F("BaoThuc 12h ne ni!") );
+      display.setCursor(0, 8);display.println( ((Alrm2_TempHour<10)?"0":"") + String(Alrm2_TempHour) + ':');
+      display.setCursor(18, 8);display.print( ((Alrm2_TempMinute<10)?"0":"") + String(Alrm2_TempMinute) );display.println( Alrm_TempAMorPM?" PM":" AM");
+      display.setCursor(52, 8);display.println( Alrm_Mode_Str[Alrm2_Mode] );
+      display.setCursor(100, 8);display.println("SET?");
+
+      display.setCursor(0, 24);display.println( (SelectSubFunc < 5) ? F(">:Next") : F("X:Discard O:Save&Back"));
+
+      if(SelectSubFunc == 1){TangGiam_Stuff(Alrm2_TempHour,1,12);}
+      if(SelectSubFunc == 2){TangGiam_Stuff(Alrm2_TempMinute,0,59);}
+      if(SelectSubFunc == 3){Toggle_Stuff(Alrm_TempAMorPM);}
+      if(SelectSubFunc == 4){TangGiam_Stuff(Alrm2_Mode,0,2);}
+      /* View of Mode 12h S1*/
+    }
+
+    if( (SelectSubFunc == 4 && h12Flag == false) || (SelectSubFunc == 5) ) 
+    {
+      if (ButtonState_Down != lastButtonState_Down) {    //dont save any thing & back to menu
+        if (ButtonState_Down == LOW)  // khi nhan menu
+        {
+          Screen = MenuSCREEN;
+          delay(100);
+        }
+      }
+
+      if (ButtonState_Up != lastButtonState_Up) {    //Ok & return to Home
+        if (ButtonState_Up == LOW)  // khi nhan menu
+        {
+          Screen = HomeSCREEN;
+          if(h12Flag == false) // if(h12Flag == false)
+          {
+            /* View of Mode 24h S2*/
+            switch (Alrm2_Mode) 
+            {
+              case 1:
+              myRTC.turnOffAlarm(2);
+              Alrm2_Bit = 0; // date,hour,minute matched
+              myRTC.setA2Time(soNgay, Alrm2_TempHour, Alrm2_TempMinute, 0b00000000, false, false/*Mode24h*/, true);
+              myRTC.turnOnAlarm(2);break;
+              case 2:
+              myRTC.turnOffAlarm(2);
+              Alrm2_Bit = 4; // hour,minute matched
+              myRTC.setA2Time(Alrm2_TempDay, Alrm2_TempHour, Alrm2_TempMinute, 0b01000000, false, false/*Mode24h*/, true);
+              myRTC.turnOnAlarm(2);break;
+              default:
+              myRTC.setA2Time(Alrm2_TempDay, Alrm2_TempHour, Alrm2_TempMinute, Alrm2_Bit, false, false/*Mode24h*/, true);
+              myRTC.turnOffAlarm(2);break;
+            }
+            /* View of Mode 24h S2*/
+          } // if(h12Flag == false)
+          else 
+          {
+            /* View of Mode 12h S2*/
+            switch (Alrm2_Mode) 
+            {
+              case 1:
+              Alrm2_Bit = 0b00000000; // date,hour,minute matched
+              myRTC.setA2Time(soNgay, Alrm2_TempHour, Alrm2_TempMinute, Alrm2_Bit, false, true/*Mode12h*/, Alrm_TempAMorPM);
+              myRTC.turnOnAlarm(2);break;
+              case 2:
+              Alrm2_Bit = 0b01000000; // hour,minute matched
+              myRTC.setA2Time(Alrm2_TempDay, Alrm2_TempHour, Alrm2_TempMinute, Alrm2_Bit, false, true/*Mode12h*/, Alrm_TempAMorPM);
+              myRTC.turnOnAlarm(2);break;
+              default:
+              myRTC.setA2Time(Alrm2_TempDay, Alrm2_TempHour, Alrm2_TempMinute, Alrm2_Bit, false, true/*Mode12h*/, Alrm_TempAMorPM);
+              myRTC.turnOffAlarm(2);break;
+            }
+            /* View of Mode 12h S2*/
+          } // else 4 if(h12Flag == false)
+          myRTC.checkIfAlarm(1);
+          myRTC.checkIfAlarm(2);
+        }
+      }
+    } // if( (SelectSubFunc == 4 && h12Flag == false) || (SelectSubFunc == 5) ) 
+
+    if(h12Flag == false)
+    {
+      /* View of Mode 24h S3*/
+      (*ptr_TangStuff)(ButtonState_Menu, lastButtonState_Menu, SelectSubFunc,1,5);
+      display.setCursor( (SelectSubFunc == 1)?6:(SelectSubFunc == 2)?30:(SelectSubFunc == 3)?70:106, 16); display.print(char(94));display.display();
+      /* View of Mode 24h S3*/
+    }
+    else 
+    {
+      /* View of Mode 12h S3*/
+      (*ptr_TangStuff)(ButtonState_Menu, lastButtonState_Menu, SelectSubFunc,1,6);
+      display.setCursor( (SelectSubFunc == 1)?3:(SelectSubFunc == 2)?21:(SelectSubFunc == 3)?39:(SelectSubFunc == 4)?70:106, 16); display.print(char(94));display.display();
+      /* View of Mode 12h S3*/
+    }
+
+  } // else if(Screen == 3)    
+  else if(Screen == ALARM_WORKING)  // Indicate Alarm on working
+  {
+    display.clearDisplay(); display.setTextSize(1); 
+    display.setCursor(0, 0);display.println(F(" Bao Thuc kia ni oi!"));
+    display.setTextSize(1);
+    display.setCursor(20, 24);display.print( F("X:TURN OFF") );display.display();
+
+    if((tick == true) && (soGiay > 25 ) )
+    {
+      tick = false; // Auto turm of alarm after 20 second
+      Screen = HomeSCREEN;
+      delay(50);
+    }
+
+    if (ButtonState_Down != lastButtonState_Down) {    
+      if (ButtonState_Down == LOW)  // khi nhan menu
+      {
+        tick = false;
+        Screen = HomeSCREEN;
+        delay(50);
+      }
+    }
+  }
+  else if(Screen == INDICATEMODE)  //Change Mode Indicate of system 12h or 24h
+  {
+    static bool ClockMode = h12Flag;
+    display.clearDisplay();display.setCursor(0, 0);display.println("Dinh dang Gio di ni!");
+    display.setCursor(50, 10);display.println("SET?");
+    display.setCursor(0, 24);display.println(F(">:Back  X:12H  O:24H"));
+    display.display();
+
+    if (ButtonState_Menu != lastButtonState_Menu) {  
+      if (ButtonState_Menu == LOW)  // khi nhan menu
+      {
+        Screen = MenuSCREEN;
+        delay(100);
+      }
+    }
+
+    if (ButtonState_Down != lastButtonState_Down) {    //dont save any thing & back to menu
+      if (ButtonState_Down == LOW)  // khi nhan menu
+      {
+        // Screen = HomeSCREEN;
+        ClockMode = true;
+        myRTC.setClockMode(ClockMode); //12H Mode
+
+        if(h12Flag) 
+        {
+          if(pmFlag)
+          {
+            myRTC.setHour( (soGio>11)?12:(soGio+12) );
+          }
+          else {
+            myRTC.setHour( (soGio==12)?0:soGio);
+          }
+        }
+        else {
+          myRTC.setHour( soGio );
+        }
+
+        if(myRTC.checkAlarmEnabled(2))
+        {
+          /* 
+            After Change Mode Indicate, we need sync the the TimeKeeper also, 
+            because of the DS3231 not auto adapt the Mode Indicate for TimeKeeper
+          */
+          Screen = ALARM;
+          delay(200);
+        }
+        else 
+        {
+          Screen = HomeSCREEN;
+        }
+      }
+    }
+
+    if (ButtonState_Up != lastButtonState_Up) {    //Ok & return to Home
+      if (ButtonState_Up == LOW)  // khi nhan menu
+      {
+        ClockMode = false;
+        myRTC.setClockMode(ClockMode); //24H Mode
+
+        if(h12Flag) 
+        {
+          if(pmFlag)
+          {
+            myRTC.setHour( (soGio>11)?12:(soGio+12) );
+          }
+          else {
+            myRTC.setHour( (soGio==12)?0:soGio);
+          }
+        }
+        else {
+          myRTC.setHour( soGio );
+        }
+        // Screen = HomeSCREEN;
+        if(myRTC.checkAlarmEnabled(2))
+        {
+          /* 
+            After Change Mode Indicate, we need sync the the TimeKeeper also, 
+            because of the DS3231 not auto adapt the Mode Indicate for TimeKeeper
+          */
+          Screen = ALARM;
+          delay(200);
+        }
+        else 
+        {
+          Screen = HomeSCREEN;
+        }
+      }
+    }
+  }
+  else if(Screen == COUNTBACK)
+  {
+    static uint8_t tempMinSet = 5, tempSecSet = 30;
+    static bool Count_In_Use = false, Count_E_Enable = false;
+    uint16_t SumMinSec = (tempMinSet*60) + tempSecSet;
+
+    if(Count_In_Use == false)
+    {
+      display.clearDisplay();display.setCursor(0, 0); display.println( F("BITCH! I'M A COUNTER") );
+      display.setCursor(0, 8);display.println( ((tempMinSet<10)?"0":"") + String(tempMinSet) + "m:");
+      display.setCursor(24, 8);display.println( ((tempSecSet<10)?"0":"") + String(tempSecSet) + 's');
+      display.setCursor(60, 8);display.println( "SET?" );
+      display.setCursor(95, 8);display.println("BACK?");
+
+      display.setCursor(0, 24);display.println( (SelectSubFunc < 3) ? F(">:Next") : (SelectSubFunc==3) ?F(">:Next     O:START"):F("X:BACK     O:HOME"));
+
+      if(SelectSubFunc == 1){TangGiam_Stuff(tempMinSet,0,99);}
+      if(SelectSubFunc == 2){TangGiam_Stuff(tempSecSet,0,59);}
+
+      if( SelectSubFunc == 3 ) // For SET?
+      {
+        if (ButtonState_Up != lastButtonState_Up) {    // Start Count
+          if (ButtonState_Up == LOW)  // khi nhan menu
+          {
+            Count_In_Use = true;
+            Count_E_Enable = true;
+          }
+        }
+      }
+      
+    }
+    else 
+    {
+      display.clearDisplay(); display.setTextSize(2);
+      display.setCursor(20, 0);display.print( ((tempMinSet<10)?"0":"") + String(tempMinSet) + "m:");
+      /*display.setCursor(24, 0);*/display.println( ((tempSecSet<10)?"0":"") + String(tempSecSet) + 's');
+      display.setTextSize(1);
+      display.setCursor(0, 24);display.print( (SumMinSec!=0)? F("X: Stop&Back   "): F(" X & O: Stop & Back") );display.println( (SumMinSec==0)? F("") : (Count_E_Enable? F("O:Stop"):F("O:Play")) );
+      if(runEverySec(1000) && Count_E_Enable && SumMinSec > 0)
+      {
+        SumMinSec = SumMinSec - 1;
+        tempSecSet = (SumMinSec - (60*(SumMinSec/60)) );
+        tempMinSet = (SumMinSec/60);
+      }
+
+      if(SumMinSec == 0)
+      {
+        // Buzz - Coi
+        // digitalWrite(COI, HIGH);
+        g_Buzz_Signal = true;
+      }
+
+      if( SelectSubFunc == 3 ) // For SET?
+      {
+        if (ButtonState_Down != lastButtonState_Down) {    // Stop Count
+          if (ButtonState_Down == LOW)  // khi nhan menu
+          {
+            Count_In_Use = false;
+            if(SumMinSec == 0)
+            {
+              // Buzz - Coi
+              // digitalWrite(COI, LOW);
+              g_Buzz_Signal = false;
+            }
+          }
+        }
+
+        if (ButtonState_Up != lastButtonState_Up) {    // Start Count
+          if (ButtonState_Up == LOW)  // khi nhan menu
+          {
+            Count_E_Enable = !Count_E_Enable;
+            if(SumMinSec == 0)
+            {
+              // Buzz - Coi
+              // digitalWrite(COI, LOW);
+              g_Buzz_Signal = false;
+              Count_In_Use = false;
+            }
+          }
+        }
+      }
+
+    }
+
+    if( SelectSubFunc == 4  )  // For BACK?
+    {
+      if (ButtonState_Down != lastButtonState_Down) {    //dont save any thing & back to menu
+        if (ButtonState_Down == LOW)  // khi nhan menu
+        {
+          Screen = MenuSCREEN;
+          delay(100);
+        }
+      }
+
+      if (ButtonState_Up != lastButtonState_Up) {    //Ok & return to Home
+        if (ButtonState_Up == LOW)  // khi nhan menu
+        {
+          Screen = HomeSCREEN;
+        }
+      }
+    }
+    
+    if(!Count_In_Use)
+    {
+      (*ptr_TangStuff)(ButtonState_Menu, lastButtonState_Menu, SelectSubFunc,1,5);
+      display.setCursor( (SelectSubFunc == 1)?6:(SelectSubFunc == 2)?30:(SelectSubFunc == 3)?66:104, 16); display.print(char(94));
+    }
+    display.display();
+  }
+  else if(Screen == ON_OFF_MANAGE)
+  {
+    static uint8_t SubFunc4ONOFFMANAGE = 0;
+    bool confirmOFF = false;
+    display.clearDisplay();
+    display.setCursor(20, 0);display.println(F("ON OFF MANAGE"));
+
+    switch (SubFunc4ONOFFMANAGE) 
+    {
+      case 1:
+      display.setCursor(0, 12);display.println( F("7SEG: OFF   OLED: ON") );
+      break;
+      case 2:
+      display.setCursor(0, 12);display.println( F("7SEG: ON    OLED: OFF") );
+      break;
+      default:
+      display.setCursor(0, 12);display.println( F("7SEG: ON    OLED: ON") );
+      break;
+    }
+
+    if (ButtonState_Down != lastButtonState_Down) // Discard Setting ON_OFF_Manage
+    {
+      if (ButtonState_Down == LOW)
+      {
+        Screen = HomeSCREEN;
+      }
+    }
+
+    if (ButtonState_Up != lastButtonState_Up) {    //Ok Setting ON_OFF_Manage & return to Home
+      if (ButtonState_Up == LOW)  // khi nhan menu
+      {
+        Screen = HomeSCREEN;
+        switch (SubFunc4ONOFFMANAGE) 
+        {
+          case 1: // 7SEG: OFF   OLED: ON
+          g_ON_OFF_MANAGE_4_7SEG_B = false;
+          g_ON_OFF_MANAGE_4_OLED_B = true;
+          break;
+          case 2: // 7SEG: ON    OLED: OFF
+          g_ON_OFF_MANAGE_4_7SEG_B = true;
+          g_ON_OFF_MANAGE_4_OLED_B = false;
+          // display.clearDisplay();
+          confirmOFF = true;
+          break;
+          default: // 7SEG: ON    OLED: ON
+          g_ON_OFF_MANAGE_4_7SEG_B = true;
+          g_ON_OFF_MANAGE_4_OLED_B = true;
+          break;
+        }
+      }
+    }
+
+    display.setCursor(0, 24);display.print( F(">:NEXT  X:BACK  O:SET") );
+    (*ptr_TangStuff)(ButtonState_Menu, lastButtonState_Menu, SubFunc4ONOFFMANAGE,0,3);
+    if(confirmOFF == true)
+    {
+      display.clearDisplay();
+    }
+    display.display();
+    
+  }
+  else
+  {
+    Screen = HomeSCREEN;
+  }
+
+  lastButtonState_Menu = ButtonState_Menu;
+  lastButtonState_Up = ButtonState_Up;
+  lastButtonState_Down = ButtonState_Down;
+
+  // if(g_Alive_Battery_B)
+  // {
+    
+  // }
+
+  if (tick || g_Buzz_Signal) 
+  {
+
+    digitalWrite(COI, runEvery_Coi(200, 100, 200, 400));
+
+    // if(tick && (soGiay > 20 ) )
+    // {
+    //   tick = false; // Auto turm of alarm after 20 second
+    //   Screen = HomeSCREEN;
+    // } // Co affect vao bao thuc
+
+    // Clear Alarm 1,2 flag
+    myRTC.checkIfAlarm(1);
+    myRTC.checkIfAlarm(2);
+  }
+  else
+  {
+    // state_COI = false;
+    digitalWrite(COI, LOW);
+  }
+}
+
+void HienThi7doan(int gio, int phut) {
+  if(count == 1)
+  {
+    digitalWrite(ST_CP, LOW);  //latch
+    shiftOut(DS, SH_CP, MSBFIRST, dayChuSo[gio / 10]);
+    digitalWrite(ST_CP, HIGH);
+    digitalWrite(A3, HIGH);
+  }
+  else if (count == 2) {
+    digitalWrite(ST_CP, LOW);
+    shiftOut(DS, SH_CP, MSBFIRST, dayChuSo[gio % 10] & 0b01111111);  //hang chuc & 0b01111111
+    digitalWrite(ST_CP, HIGH);
+    digitalWrite(3, HIGH);
+  }
+  else if (count == 3){
+    digitalWrite(ST_CP, LOW);
+    shiftOut(DS, SH_CP, MSBFIRST, dayChuSo[phut / 10]);  //hang chuc
+    digitalWrite(ST_CP, HIGH);
+    digitalWrite(4, HIGH);
+  }
+  else if(count == 4)
+  {
+    digitalWrite(ST_CP, LOW);
+    shiftOut(DS, SH_CP, MSBFIRST, dayChuSo[phut % 10]);  //hang chuc
+    digitalWrite(ST_CP, HIGH);
+    digitalWrite(5, HIGH); 
+  }
+}
+
+/*
+@Parameters: 
+- Firstvalue la gia tri ban dau
+- Min la gia tri thap nhat cua Firstvalue
+- Max la gia tri lon nhat cua Firstvalue
+@ How it work:
+* When you press the down or up button, it will increase or decrease the value,
+* when reach the min or max value, its force asign the max or min value.
+! You can press and hold the button about 700ms for auto increase or decrease the value to 1 at each 200ms.
+*/
+void TangGiam_Stuff(uint8_t &FirstValue, uint8_t Min, uint8_t Max) 
+{
+  if (ButtonState_Up != lastButtonState_Up) {
+    if (ButtonState_Up == LOW)  // nhan phim tang
+    {
+      FirstValue = FirstValue + 1;
+      if (FirstValue > Max) {
+        FirstValue = Min;
+      }
+    }
+  }
+
+  if (ButtonState_Down != lastButtonState_Down) {
+    if (ButtonState_Down == LOW)  // nhan phim tang
+    {
+      FirstValue = FirstValue - 1;
+      if ( (FirstValue > 250) || (FirstValue < Min) ) {
+        FirstValue = Max;
+      }
+    }
+  }
+
+  /* AUTO INCREASE - DECREASE SECTION */
+
+  if (ButtonState_Up == LOW)  // nhan phim tang
+  {
+    if (millis() - lastChangedTime1 > 700) 
+    {
+      if (runEvery(200))
+      {
+        FirstValue = FirstValue + 1;
+      }
+      if (FirstValue > Max) {
+        FirstValue = Min;
+      }
+    }
+  }
+  else {lastChangedTime1 = millis();}
+
+  if (ButtonState_Down == LOW)  // nhan phim tang
+  {
+    if (millis() - lastChangedTime2 > 700) 
+    {
+      if (runEvery(200))
+      {
+        FirstValue = FirstValue - 1;
+      }
+      if ( (FirstValue > 250) || (FirstValue < Min) ) {
+        FirstValue = Max;
+      }
+    }
+  }
+  else {lastChangedTime2 = millis();}
+}
+
+/*
+@Parameters:
+- &Button: for first state of Button
+- &lastButton: For state after release button
+- &SubFunction: Change value up when press the button
+- Min: Minimum value can be
+- Max: Maximum value can be
+@ How it work:
+- When you press any button you asign into this function, the function will check the state of press then
+  add up the value to 1, when reach at max value, it will force asign the min value.
+*/
+void TangStuff(uint8_t &Button, uint8_t &lastButton, uint8_t &SubFunction, uint8_t Min, uint8_t Max)
+{
+  if(Button != lastButton){
+    if (Button == LOW)  // khi nhan menu
+    {
+      SubFunction++;
+      if(SubFunction >= Max){SubFunction = Min;}
+    }
+  }
+}
+
+/*
+@Parameters:
+- &Var: any boolean variable
+@ How it work:
+- Simply toggles it bruh, what r you waiting for.
+*/
+void Toggle_Stuff(bool &Var)
+{
+  if (ButtonState_Up != lastButtonState_Up) {
+    if (ButtonState_Up == LOW)  // nhan phim Tang
+    {
+      Var = !Var;
+    }
+  }
+
+  if (ButtonState_Down != lastButtonState_Down) {
+    if (ButtonState_Down == LOW)  // nhan phim Gian
+    {
+      Var = !Var;
+    }
+  }
+}
+
+void Show_OLED(float doC, float doH)
+{
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.setTextSize(2);
+  display.print( ((soGio<10)? "0":"") + String(soGio) + ':' + ((soPhut<10)? "0":"") + String(soPhut) + ':');
+  display.setTextSize(1);      // Normal 1:1 pixel scale
+  display.print( (soGiay<10)? "0":"" );display.print(String(soGiay));
+  // display.println("SEC");
+  display.setCursor( h12Flag?72:69, 8);display.println(h12Flag?(pmFlag?"PM":"AM") :" s ");
+  display.setTextSize(2);
+  display.setCursor(0,16);display.print(DoW[soThu]);
+  display.setTextSize(1);      // Normal 1:1 pixel scale
+  display.setCursor(40,16);display.println( Month[soThang] + ' ' + ((soNgay<10)? "0":"") + String(soNgay) );
+  display.setCursor(40,25);display.println(2000+soNam);
+
+  display.setCursor(90,0);display.print(F("   %H"));
+  display.setCursor(90,8);display.println(doH);
+  display.setCursor(90,16);display.print(F("   "));display.print((char)247);display.print("C");
+  display.setCursor(90,24);display.println(doC);
+  display.display(); // actually display all of the above
+}
+
+ISR (TIMER1_COMPA_vect) 
+{
+  digitalWrite(A3, LOW);
+  digitalWrite(3, LOW);
+  digitalWrite(4, LOW);
+  digitalWrite(5, LOW);
+  if(g_ON_OFF_MANAGE_4_7SEG_B)
+  {
+    if(count > 4)
+    {
+      count = 0;
+    }
+    else
+    {
+      count = count + 1;
+      HienThi7doan(soGio,soPhut);
+    }
+  }
+}
+
+boolean runEvery(unsigned long interval)
+{
+  static unsigned long previousMillis = 0;
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval)
+  {
+    previousMillis = currentMillis;
+    return true;
+  }
+  return false;
+}
+
+boolean runEvery4Temp_Hum(unsigned long interval)
+{
+  static unsigned long previousMillis = 0;
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval)
+  {
+    previousMillis = currentMillis;
+    return true;
+  }
+  return false;
+}
+
+boolean runEverySec(unsigned long interval)
+{
+  static unsigned long previousMillis = 0;
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval)
+  {
+    previousMillis = currentMillis;
+    return true;
+  }
+  return false;
+}
+
+bool runEvery_Coi(uint16_t HIGH1,uint16_t LOW1,uint16_t HIGH2,uint16_t LOW2) {
+  static unsigned long previousMillis = 0;
+  unsigned long currentMillis = millis();
+  bool ret = false;
+  LOW1 = LOW1+HIGH1; HIGH2 = HIGH1+LOW1; LOW2 = HIGH1+LOW1+HIGH2;
+  unsigned long Minus = currentMillis - previousMillis;
+  // Serial.println(Minus);
+  if( ( Minus > 0) && ( Minus <= HIGH1) )
+  {
+    ret = true;
+  }
+  else if( ( Minus >= HIGH1) && ( Minus <= LOW1) )
+  {
+    ret = false;
+  }
+  else if( ( Minus >= LOW1) && ( Minus <= HIGH2) )
+  {
+    ret = true;
+  }
+  else if( ( Minus >= HIGH2) && ( Minus <= LOW2) )
+  {
+    ret = false;
+  }
+  else 
+  {
+    previousMillis = currentMillis;
+  }
+  return ret;
+}
+/*
+  digitalWrite(COI, HIGH);
+  delay(200);
+  digitalWrite(COI, LOW);
+  delay(100);
+  digitalWrite(COI, HIGH);
+  delay(200);
+  digitalWrite(COI, LOW);
+  delay(400);
+*/
+
+void isr_TickTock() 
+{
+    // interrupt signals to loop
+    tick = true;
+    Screen = ALARM_WORKING;
+}
