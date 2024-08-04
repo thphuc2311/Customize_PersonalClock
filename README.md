@@ -3,7 +3,7 @@
 Hi. This is my open - source DIY project.
 In case you just want to take a look to my code, click to PersonalClock_CustomMenu.ino to view code directly.
 
-In other hand, you want to Edit or Re-Create this project as your custom project. You can download 2 folder zip as material.
+In other hand, you want to Edit or Re-Create this project as your custom project. You can download 2 folders *.zip as material.
 
 I have attached the link to my easyEDA domain in PCB_Design.txt
 You can preview and clone as your project and then Customize the design (schematic and PCB layout) as you want.
